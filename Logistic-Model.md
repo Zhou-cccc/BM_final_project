@@ -14,6 +14,7 @@ library(car)
 library(rsample)
 library(knitr)
 library(kableExtra)
+library(GGally)
 ```
 
 ### Load Data and Cleaning
@@ -44,21 +45,20 @@ data <- read.csv("Project_2_data.csv") |>
 
 ``` r
 grade_diff_table <- table(data$grade, data$differentiate)
-print(grade_diff_table)
+rownames(grade_diff_table) <- c("Grade=1", "Grade=2", "Grade=3", "Grade=4")
+
+knitr::kable(grade_diff_table,
+             caption = "Contingency Table of Grade vs Differentiate")
 ```
 
-    ##    
-    ##     Moderately differentiated Poorly differentiated Undifferentiated
-    ##   1                         0                     0                0
-    ##   2                      2351                     0                0
-    ##   3                         0                  1111                0
-    ##   4                         0                     0               19
-    ##    
-    ##     Well differentiated
-    ##   1                 543
-    ##   2                   0
-    ##   3                   0
-    ##   4                   0
+|  | Moderately differentiated | Poorly differentiated | Undifferentiated | Well differentiated |
+|:---|---:|---:|---:|---:|
+| Grade=1 | 0 | 0 | 0 | 543 |
+| Grade=2 | 2351 | 0 | 0 | 0 |
+| Grade=3 | 0 | 1111 | 0 | 0 |
+| Grade=4 | 0 | 0 | 19 | 0 |
+
+Contingency Table of Grade vs Differentiate
 
 ``` r
 data <- data |> select(-differentiate)
@@ -85,38 +85,47 @@ if (chisq_test_result$p.value < 0.05) {
     ## 6th Stage and N Stage are not independent，delete 6th Stage.
 
 ``` r
-scatter_plot <- ggplot(data, aes(x = regional_node_examined, y = reginol_node_positive)) +
-  geom_point() +  
-  labs(
-    title = "Scatter Plot of Regional Nodes Examined vs Reginol Node Positive",
-    x = "Regional Node Examined",
-    y = "Reginol Node Positive"
-  ) +
-  theme_minimal()
-scatter_plot
+numeric_data <- data |> select_if(is.numeric)
+
+scatter_matrix <- ggpairs(
+  numeric_data, 
+  upper = list(continuous = "points"), 
+  lower = list(continuous = "smooth"),
+  diag = list(continuous = "densityDiag"),  
+  axisLabels = "show",
+  title = "Scatter Plot Matrix of Numeric Variables"
+) +
+  theme_minimal(base_size = 12) + 
+  theme(strip.text = element_text(size = 8)) 
+print(scatter_matrix)
 ```
 
 ![](Logistic-Model_files/figure-gfm/unnamed-chunk-7-1.png)<!-- -->
 
 ``` r
-regional_cor_matrix <- cor(
-  data |> 
-    select(regional_node_examined, reginol_node_positive), use = "complete.obs")
-regional_cor_matrix
-```
+cor_matrix <- cor(numeric_data, use = "complete.obs")
 
-    ##                        regional_node_examined reginol_node_positive
-    ## regional_node_examined              1.0000000             0.4115797
-    ## reginol_node_positive               0.4115797             1.0000000
-
-``` r
 cor_matrix_plot <- ggplot(
-  data = as.data.frame(as.table(regional_cor_matrix)), aes(Var1, Var2, fill = Freq)) +
+  data = as.data.frame(as.table(cor_matrix)), 
+  aes(Var1, Var2, fill = Freq)) +
   geom_tile() +
-  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limit = c(-1, 1)) +
-  theme_minimal() +
-  labs(title = "Correlation Matrix", x = "", y = "")
-cor_matrix_plot
+  scale_fill_gradient2(
+    low = "blue", high = "red", mid = "white", midpoint = 0, 
+    limit = c(-1, 1)
+  ) +
+  geom_text(aes(label = sprintf("%.2f", Freq)), color = "black", size = 4) +  
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),  
+    axis.text.y = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 12)
+  ) +
+  labs(
+    title = "Correlation Matrix of Numeric Variables",
+    x = "",
+    y = ""
+  )
+print(cor_matrix_plot)
 ```
 
 ![](Logistic-Model_files/figure-gfm/unnamed-chunk-7-2.png)<!-- -->
