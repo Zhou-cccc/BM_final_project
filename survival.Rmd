@@ -13,7 +13,13 @@ library(caret)
 library(pROC)
 library(survival)
 library(survminer)
+library(kableExtra)
+library(xtable)
+library(kableExtra)
+library(survcomp)
 ```
+
+## Data cleaning
 
 ```{r}
 data <- read.csv("Project_2_data.csv") |> 
@@ -27,6 +33,8 @@ data <- read.csv("Project_2_data.csv") |>
   select(-reginol_node_positive, -regional_node_examined)
 ```
 
+## Set train and test data
+
 ```{r}
 set.seed(123)
 train_index <- createDataPartition(data$status, p = 0.8, list = FALSE)
@@ -35,17 +43,7 @@ test_data <- data[-train_index, ]
 ```
 
 
-
-```{r}
-log_model <- glm(status ~ . - survival_months - stage_six - differentiate, family = binomial, data = train_data)
-
-# Model summary
-summary(log_model)
-
-# Check multicollinearity
-vif_values <- car::vif(log_model)
-print(vif_values)
-```
+## Create the survival object
 
 ```{r}
 # Create a survival object
@@ -56,19 +54,23 @@ cox_model <- coxph(surv_object ~ . - status - survival_months - stage_six - diff
 
 ```
 
+## Test proportional hazards assumption
 
 ```{r}
-# Test proportional hazards assumption
 ph_test <- cox.zph(cox_model)
+ph_test_table <- as.data.frame(ph_test$table) %>%
+  rownames_to_column(var = "Covariate") %>%
+  mutate(p_value = format.pval(`p`, digits = 3)) %>%
+  select(Covariate, chisq = `chisq`, df = `df`, p_value) |> 
+  kable("html", align = c("l", "c", "c", "c"), caption = "Proportional Hazards Test Results") %>%
+  kable_styling(full_width = FALSE, position = "center")
 
-# Print test results
-print(ph_test)
+ph_test_table
 
 # Visualize the results
 ggcoxzph(ph_test)
 ```
 
-Since the p-value of `a_stage`, `estrogen_status` and `progesterone_status` are less than 0.05, which indicates these variables violates the proportional hazards assumption, so we remove them from the model.
 
 ```{r}
 # Fit the full model
@@ -76,25 +78,39 @@ full_model <- coxph(surv_object ~ . - status - survival_months - stage_six - dif
 
 summary(full_model)
 
-cox.zph(full_model)
+# Test assumptions again
+ph_test_table <- as.data.frame(cox.zph(full_model)$table) %>%
+  rownames_to_column(var = "Covariate") %>%
+  mutate(p_value = format.pval(`p`, digits = 3)) %>%
+  select(Covariate, chisq = `chisq`, df = `df`, p_value) |> 
+  kable("html", align = c("l", "c", "c", "c"), caption = "Proportional Hazards Test Results (Refitted)") %>%
+  kable_styling(full_width = FALSE, position = "center")
 
+ph_test_table
+```
+
+## Stepwise Selection
+
+```{r}
 # Perform stepwise selection
 stepwise_model <- step(full_model, direction = "both")
 
 # Summary of the final selected model
 summary(stepwise_model)
-
-cox.zph(stepwise_model)
 ```
+
+## Prediction
 
 ```{r}
 # Predict on the test dataset
 surv_test <- Surv(time = test_data$survival_months, event = as.numeric(test_data$status == "Dead"))
 test_risk <- predict(stepwise_model, newdata = test_data, type = "risk")
+```
 
-# Evaluate model performance on the test dataset
+## Evaluate model performance on the test dataset
+
+```{r}
 # Concordance index
-library(survcomp)
 c_index <- concordance.index(x = test_risk, 
                              surv.time = test_data$survival_months, 
                              surv.event = as.numeric(test_data$status == "Dead"))
