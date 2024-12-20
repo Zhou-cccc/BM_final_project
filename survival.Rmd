@@ -5,3 +5,108 @@ date: "2024-12-19"
 output: html_document
 ---
 
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(survival)
+library(caret)
+library(pROC)
+library(survival)
+library(survminer)
+```
+
+```{r}
+data <- read.csv("Project_2_data.csv") |> 
+  janitor::clean_names() |>
+  mutate(grade = as.character(grade)) |>  
+  mutate(grade = ifelse(trimws(tolower(grade)) == "anaplastic; grade iv", "4", grade)) |> 
+  rename(stage_six = x6th_stage) |> 
+  mutate(across(c(t_stage, race, marital_status, n_stage, stage_six, differentiate, a_stage, estrogen_status,
+                  status, grade), as.factor)) |> 
+  mutate(node_positive_rate = reginol_node_positive / regional_node_examined) |> 
+  select(-reginol_node_positive, -regional_node_examined)
+```
+
+```{r}
+set.seed(123)
+train_index <- createDataPartition(data$status, p = 0.8, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+```
+
+
+
+```{r}
+log_model <- glm(status ~ . - survival_months - stage_six - differentiate, family = binomial, data = train_data)
+
+# Model summary
+summary(log_model)
+
+# Check multicollinearity
+vif_values <- car::vif(log_model)
+print(vif_values)
+```
+
+```{r}
+# Create a survival object
+surv_object <- Surv(time = train_data$survival_months, event = as.numeric(train_data$status == "Dead"))
+
+# Fit a Cox Proportional Hazards model
+cox_model <- coxph(surv_object ~ . - status - survival_months - stage_six - differentiate, data = train_data)
+
+```
+
+
+```{r}
+# Test proportional hazards assumption
+ph_test <- cox.zph(cox_model)
+
+# Print test results
+print(ph_test)
+
+# Visualize the results
+ggcoxzph(ph_test)
+```
+
+Since the p-value of `a_stage`, `estrogen_status` and `progesterone_status` are less than 0.05, which indicates these variables violates the proportional hazards assumption, so we remove them from the model.
+
+```{r}
+# Fit the full model
+full_model <- coxph(surv_object ~ . - status - survival_months - stage_six - differentiate - estrogen_status - progesterone_status - a_stage + strata(a_stage, estrogen_status, progesterone_status), data = train_data)
+
+summary(full_model)
+
+cox.zph(full_model)
+
+# Perform stepwise selection
+stepwise_model <- step(full_model, direction = "both")
+
+# Summary of the final selected model
+summary(stepwise_model)
+
+cox.zph(stepwise_model)
+```
+
+```{r}
+# Predict on the test dataset
+surv_test <- Surv(time = test_data$survival_months, event = as.numeric(test_data$status == "Dead"))
+test_risk <- predict(stepwise_model, newdata = test_data, type = "risk")
+
+# Evaluate model performance on the test dataset
+# Concordance index
+library(survcomp)
+c_index <- concordance.index(x = test_risk, 
+                             surv.time = test_data$survival_months, 
+                             surv.event = as.numeric(test_data$status == "Dead"))
+print(c_index$c.index)
+
+# Kaplan-Meier curves for high- and low-risk groups
+test_data$risk_group <- ifelse(test_risk > median(test_risk), "High", "Low")
+km_fit <- survfit(Surv(time = test_data$survival_months, event = as.numeric(test_data$status == "Dead")) ~ risk_group, data = test_data)
+
+# Visualize Kaplan-Meier curves
+ggsurvplot(km_fit, data = test_data, pval = TRUE, 
+           title = "Kaplan-Meier Curves for Predicted Risk Groups")
+```
+
+
