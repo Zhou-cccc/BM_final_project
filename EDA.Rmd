@@ -1,0 +1,135 @@
+---
+title: "BM final try"
+author: "Liqi Zhou"
+output: github_document
+---
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(flextable)
+library(officer)
+library(ggplot2)
+library(gridExtra)
+```
+
+```{r}
+bcp <- read.csv("Project_2_data.csv") |>
+  mutate(across(where(is.character), as.factor))
+```
+
+# 1. All variables
+a descriptive table with summary statistics for all variables
+```{r}
+bcp |> 
+  summarise(across(where(is.numeric), 
+                   list(mean = ~mean(.x, na.rm = TRUE),
+                        sd = ~sd(.x, na.rm = TRUE),
+                        min = ~min(.x, na.rm = TRUE),
+                        max = ~max(.x, na.rm = TRUE),
+                        median = ~median(.x, na.rm = TRUE),
+                        missing = ~sum(is.na(.x))
+                   ), 
+                   .names = "{.col}_{.fn}")) |> 
+  pivot_longer(everything(), 
+               names_to = c("Variable", ".value"), 
+               names_sep = "_") |>
+  knitr::kable()
+
+```
+
+```{r}
+bcp |> 
+  select(where(is.factor)) |>
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Level") |>
+  count(Variable, Level) |>
+  group_by(Variable) |>
+  mutate(Proportion = scales::percent(n / sum(n), accuracy = 0.01)) |>
+  ungroup() |> 
+  arrange(Variable, desc(n)) |> 
+  mutate(Variable = ifelse(duplicated(Variable), "", Variable)) |>  
+  knitr::kable(col.names = c("Variable", "Level", "Count", "Proportion"))
+
+```
+
+
+# 2. Outcome
+## Survival.Months & Status
+```{r}
+library(ggplot2)
+library(patchwork)
+
+plot1 <- ggplot(bcp, aes(x = Survival.Months)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "lightblue", color = "black", alpha = 0.7) +
+  geom_density(color = "blue", linewidth = 1) +
+  labs(title = "Distribution of Survival Months",
+       x = "Survival Months",
+       y = "Density") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot2 <- ggplot(bcp, aes(x = Status, fill = Status)) +
+  geom_bar() +
+  scale_fill_manual(values = c("lightblue", "gold")) +
+  labs(title = "Survival Status Distribution",
+       x = "Status",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5))
+
+combined_plot <- plot1 + plot2 + 
+  plot_layout(ncol = 2) & 
+  theme(plot.margin = margin(10, 10, 10, 10))
+
+combined_plot
+```
+
+
+
+# 3. Predictors
+## numeric
+```{r}
+plot_continuous_density_box <- function(var_name) {
+  p1 <- ggplot(bcp, aes_string(x = var_name)) +
+    geom_density(fill = "skyblue", alpha = 0.7, color = "blue") +
+    labs(title = paste("Density Plot of", var_name), 
+         x = var_name, 
+         y = "Density") +
+    theme_minimal()
+  
+  p2 <- ggplot(bcp, aes_string(y = var_name)) +
+    geom_boxplot(fill = "orange") +
+    labs(title = paste("Boxplot of", var_name), 
+         y = var_name) +
+    theme_minimal()
+  
+  return(list(p1, p2)) 
+}
+
+continuous_vars <- c("Age", "Tumor.Size", "Regional.Node.Examined", "Reginol.Node.Positive")
+plots <- lapply(continuous_vars, plot_continuous_density_box)
+
+left_plots <- do.call(c, lapply(plots, `[`, 1:2)) 
+
+grid.arrange(grobs = left_plots, ncol = 2)
+```
+
+## categorical
+```{r}
+categorical_vars <- bcp |>
+  select(1:14) |>
+  select(where(is.factor))
+  
+plot_categorical <- function(var_name) {
+  ggplot(bcp, aes_string(x = var_name)) +
+    geom_bar(fill = "skyblue", color = "black") +
+    labs(title = paste("Frequency of", var_name), x = var_name, y = "Count") +
+    theme_minimal()
+}
+
+cat_plots <- lapply(names(categorical_vars), plot_categorical)
+
+grid.arrange(grobs = cat_plots, ncol = 2)
+
+```
+
