@@ -1,0 +1,214 @@
+---
+title: "Logistic Model Prediction"
+author: "Fengwei Lei"
+output: github_document
+---
+
+```{r}
+library(carData)
+library(tidyverse)
+library(corrplot)
+library(GGally)
+library(caret)   
+library(glmnet)  
+library(pROC)    
+library(car)
+library(rsample)
+```
+
+### Load Data and Cleaning
+
+```{r}
+data <- read.csv("Project_2_data.csv") |> 
+  janitor::clean_names() |>
+  subset(select = -c(survival_months)) |>
+  mutate(grade = as.character(grade)) |>  
+  mutate(grade = ifelse(trimws(tolower(grade)) == "anaplastic; grade iv", "4", grade)) |> 
+  rename(stage_six = x6th_stage) |> 
+  mutate(
+    t_stage = factor(t_stage),
+    race = factor(race),
+    marital_status = factor(trimws(marital_status)),
+    n_stage = factor(n_stage),
+    stage_six = factor(stage_six),
+    differentiate = factor(differentiate),
+    a_stage = factor(a_stage), 
+    estrogen_status = factor(estrogen_status),
+    progesterone_status = factor(progesterone_status), 
+    status = factor(status),
+    grade = factor(grade)  
+  )
+```
+
+### Collinearity
+```{r}
+grade_diff_table <- table(data$grade, data$differentiate)
+print(grade_diff_table)
+```
+```{r}
+data <- data |> select(-differentiate)
+```
+
+```{r}
+chisq_test_result <- chisq.test(table(data$stage_six, data$n_stage))
+print(chisq_test_result)
+```
+```{r}
+if (chisq_test_result$p.value < 0.05) {
+  cat("6th Stage and N Stage are not independent，delete 6th Stage. \n")
+  data <- data |> select(-stage_six)
+}
+```
+
+```{r}
+scatter_plot <- ggplot(data, aes(x = regional_node_examined, y = reginol_node_positive)) +
+  geom_point() +  
+  labs(
+    title = "Scatter Plot of Regional Nodes Examined vs Reginol Node Positive",
+    x = "Regional Node Examined",
+    y = "Reginol Node Positive"
+  ) +
+  theme_minimal()
+scatter_plot
+
+regional_cor_matrix <- cor(
+  data |> 
+    select(regional_node_examined, reginol_node_positive), use = "complete.obs")
+regional_cor_matrix
+
+cor_matrix_plot <- ggplot(
+  data = as.data.frame(as.table(regional_cor_matrix)), aes(Var1, Var2, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limit = c(-1, 1)) +
+  theme_minimal() +
+  labs(title = "Correlation Matrix", x = "", y = "")
+cor_matrix_plot
+```
+
+```{r}
+data <- data |> 
+  mutate(
+    node_positive_rate = reginol_node_positive / regional_node_examined,
+    node_positive_rate = ifelse(is.nan(node_positive_rate) | is.infinite(node_positive_rate), NA, node_positive_rate)
+  ) |> 
+  select(-reginol_node_positive, -regional_node_examined)
+
+```
+
+**VIF**
+
+```{r}
+logistic_model <- glm(status ~.,
+                      data = data, family = binomial)
+
+vif_values <- vif(logistic_model)
+vif_values
+
+high_vif <- vif_values[vif_values > 5]
+if (length(high_vif) > 0) {
+  cat("There exits collinearity problem between variables.\n")
+  print(high_vif)
+} else {
+  cat("There is no collinearity problem between variables.\n")
+}
+```
+
+### train-test split
+
+```{r}
+set.seed(123)
+train_test_split <- initial_split(data, prop = 0.7)
+train_data <- training(train_test_split)
+test_data <- testing(train_test_split)
+```
+
+### Stepwise Selection
+
+```{r}
+initial_model <- glm(status ~ ., data = train_data, family = binomial)
+
+
+stepwise_model <- step(initial_model, direction = "both", trace = 0)
+
+
+important_vars <- names(coef(stepwise_model))[-1]  
+important_vars
+```
+
+
+```{r}
+train_data_new =train_data |> 
+  select(age, race, t_stage, n_stage, grade, estrogen_status, progesterone_status, node_positive_rate, status)
+
+main_effects_model <- glm(status~. , data = train_data_new, family = binomial)
+summary(main_effects_model)
+```
+
+### Considering Interactions
+
+```{r}
+interaction_model_1 <- glm(status ~ age * race + t_stage + n_stage + grade + estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_1)
+
+interaction_model_2 <- glm(status ~  race + age *t_stage + n_stage + grade + estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_2)
+
+interaction_model_3 <- glm(status ~  race + t_stage + age * n_stage + grade + estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_3)
+
+interaction_model_4 <- glm(status ~  race + t_stage + n_stage + age * grade + estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_4)
+
+interaction_model_5 <- glm(status ~  race + t_stage + n_stage + grade + age * estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_5)
+
+interaction_model_6 <- glm(status ~  race + t_stage + n_stage + grade + estrogen_status + age *progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_6)
+
+interaction_model_7 <- glm(status ~  race + t_stage + n_stage + grade + estrogen_status + progesterone_status + age * node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_7)
+```
+
+```{r}
+interaction_model_8 <- glm(status ~ age+node_positive_rate * race + t_stage + n_stage + grade + estrogen_status + progesterone_status , 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_8)
+
+interaction_model_9 <- glm(status ~  race + node_positive_rate *t_stage + n_stage + grade + estrogen_status + progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_9)
+
+interaction_model_10 <- glm(status ~  race + t_stage + node_positive_rate * n_stage + grade + estrogen_status + progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_10)
+
+interaction_model_11 <- glm(status ~  race + t_stage + n_stage + node_positive_rate * grade + estrogen_status + progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_11)
+
+interaction_model_12 <- glm(status ~  race + t_stage + n_stage + grade + node_positive_rate * estrogen_status + progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_12)
+
+interaction_model_13 <- glm(status ~  race + t_stage + n_stage + grade + estrogen_status + node_positive_rate *progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_13)
+
+interaction_model_14 <- glm(status ~  race + t_stage + n_stage + grade + estrogen_status + progesterone_status + age * node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_14)
+```
+
+### Model Training and Evaluation
+
+```{r}
+
+```
+
