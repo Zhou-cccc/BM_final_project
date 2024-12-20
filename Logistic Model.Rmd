@@ -2,9 +2,10 @@
 title: "Logistic Model Prediction"
 author: "Fengwei Lei"
 output: github_document
+always_allow_html: true
 ---
 
-```{r}
+```{r message=FALSE}
 library(carData)
 library(tidyverse)
 library(corrplot)
@@ -14,6 +15,9 @@ library(glmnet)
 library(pROC)    
 library(car)
 library(rsample)
+library(knitr)
+library(kableExtra)
+
 ```
 
 ### Load Data and Cleaning
@@ -140,6 +144,9 @@ important_vars
 train_data_new =train_data |> 
   select(age, race, t_stage, n_stage, grade, estrogen_status, progesterone_status, node_positive_rate, status)
 
+test_data_new = test_data |> 
+  select(age, race, t_stage, n_stage, grade, estrogen_status, progesterone_status, node_positive_rate, status)
+
 main_effects_model <- glm(status~. , data = train_data_new, family = binomial)
 summary(main_effects_model)
 ```
@@ -209,6 +216,123 @@ summary(interaction_model_14)
 ### Model Training and Evaluation
 
 ```{r}
+train_data_new$status <- as.numeric(train_data_new$status)-1  
+test_data_new$status <- as.numeric(test_data_new$status)-1 
 
+logistic_model <- glm(status ~ ., data = train_data_new, family = binomial)
+
+predictions <- predict(logistic_model, test_data_new, type = "response")
+
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+
+
+conf_matrix <- table(Predicted = predicted_classes, Actual = test_data_new$status)
+
+TP <- conf_matrix[2, 2]  # True Positive
+FP <- conf_matrix[2, 1]  # False Positive
+FN <- conf_matrix[1, 2]  # False Negative
+TN <- conf_matrix[1, 1]  # True Negative
+
+
+sensitivity <- TP / (TP + FN)  # Sensitivity (Recall)
+precision <- TP / (TP + FP)    # Precision
+accuracy <- (TP + TN) / sum(conf_matrix)  # Accuracy
+auc_value <- auc(roc(test_data_new$status, predictions))  # AUC
+f1_score <- 2 * (precision * sensitivity) / (precision + sensitivity)  # F1-Score
+
+
+conf_matrix_table <- data.frame(
+  Actual = c("0 (Alive)", "1 (Dead)", "Total"),
+  Predicted_0 = c(TN, FN, TN + FN),
+  Predicted_1 = c(FP, TP, FP + TP),
+  Total = c(TN + FP, FN + TP, sum(conf_matrix))
+)
+
+metrics_table <- data.frame(
+  Metric = c("Accuracy", "Sensitivity (Recall)", "Precision", "F1-Score", "AUC"),
+  Value = round(c(accuracy, sensitivity, precision, f1_score, auc_value), 4)
+)
+
+kable(conf_matrix_table, 
+      caption="Confusion Matrix",
+      col.names = c("Actual", "Predicted = 0", "Predicted = 1", "Total")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+
+kable(metrics_table, caption="Evaluation Metrics") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
 ```
+
+
+**ROC Curve**
+```{r}
+roc_curve <- roc(test_data_new$status, predictions)
+
+roc_data <- data.frame(
+  TPR = rev(roc_curve$sensitivities),  # True Positive Rate (Sensitivity)
+  FPR = rev(1 - roc_curve$specificities)  # False Positive Rate (1 - Specificity)
+)
+
+ggplot(data = roc_data, aes(x = FPR, y = TPR)) +
+  geom_line(color = "blue", linewidth = 1) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray") + 
+  labs(
+    title = "ROC Curve",
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)",
+    caption = paste0("AUC = ", round(auc(roc_curve), 3)) 
+  ) +
+  theme_minimal(base_size = 15) + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+### More Evaluation
+
+**Evaluate Performance Metrics by Race**
+```{r}
+# Divide test data by race
+majority_group <- test_data_new[test_data_new$race == "White", ]
+minority_group <- test_data_new[test_data_new$race != "White", ]
+
+# Define a function to compute performance metrics
+compute_metrics <- function(data, model) {
+  predictions <- predict(model, data, type = "response")
+  predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+  
+  # Confusion matrix components
+  conf_matrix <- table(Predicted = predicted_classes, Actual = data$status)
+  TP <- conf_matrix[2, 2]
+  FP <- conf_matrix[2, 1]
+  FN <- conf_matrix[1, 2]
+  TN <- conf_matrix[1, 1]
+  
+  # Metrics
+  sensitivity <- TP / (TP + FN)  # Recall
+  precision <- TP / (TP + FP)
+  accuracy <- (TP + TN) / sum(conf_matrix)
+  auc_value <- auc(roc(data$status, predictions))
+  
+  data.frame(
+    Accuracy = round(accuracy, 4),
+    Sensitivity = round(sensitivity, 4),
+    Precision = round(precision, 4),
+    AUC = round(auc_value, 4)
+  )
+}
+
+# Compute metrics for each group
+majority_metrics <- compute_metrics(majority_group, logistic_model)
+minority_metrics <- compute_metrics(minority_group, logistic_model)
+
+# Combine results
+group_comparison <- rbind(
+  "Majority (White)" = majority_metrics,
+  "Minority (Black + Other)" = minority_metrics
+)
+
+kable(group_comparison, caption="Performance Metrics by Race") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+
+
 

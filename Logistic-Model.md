@@ -5,88 +5,15 @@ Fengwei Lei
 ``` r
 library(carData)
 library(tidyverse)
-```
-
-    ## ── Attaching core tidyverse packages ──────────────────────── tidyverse 2.0.0 ──
-    ## ✔ dplyr     1.1.4     ✔ readr     2.1.5
-    ## ✔ forcats   1.0.0     ✔ stringr   1.5.1
-    ## ✔ ggplot2   3.5.1     ✔ tibble    3.2.1
-    ## ✔ lubridate 1.9.3     ✔ tidyr     1.3.1
-    ## ✔ purrr     1.0.2     
-    ## ── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
-    ## ✖ dplyr::filter() masks stats::filter()
-    ## ✖ dplyr::lag()    masks stats::lag()
-    ## ℹ Use the conflicted package (<http://conflicted.r-lib.org/>) to force all conflicts to become errors
-
-``` r
 library(corrplot)
-```
-
-    ## corrplot 0.95 loaded
-
-``` r
 library(GGally)
-```
-
-    ## Registered S3 method overwritten by 'GGally':
-    ##   method from   
-    ##   +.gg   ggplot2
-
-``` r
 library(caret)   
-```
-
-    ## Loading required package: lattice
-    ## 
-    ## Attaching package: 'caret'
-    ## 
-    ## The following object is masked from 'package:purrr':
-    ## 
-    ##     lift
-
-``` r
 library(glmnet)  
-```
-
-    ## Loading required package: Matrix
-    ## 
-    ## Attaching package: 'Matrix'
-    ## 
-    ## The following objects are masked from 'package:tidyr':
-    ## 
-    ##     expand, pack, unpack
-    ## 
-    ## Loaded glmnet 4.1-8
-
-``` r
 library(pROC)    
-```
-
-    ## Type 'citation("pROC")' for a citation.
-    ## 
-    ## Attaching package: 'pROC'
-    ## 
-    ## The following objects are masked from 'package:stats':
-    ## 
-    ##     cov, smooth, var
-
-``` r
 library(car)
-```
-
-    ## 
-    ## Attaching package: 'car'
-    ## 
-    ## The following object is masked from 'package:dplyr':
-    ## 
-    ##     recode
-    ## 
-    ## The following object is masked from 'package:purrr':
-    ## 
-    ##     some
-
-``` r
 library(rsample)
+library(knitr)
+library(kableExtra)
 ```
 
 ### Load Data and Cleaning
@@ -270,6 +197,9 @@ important_vars
 
 ``` r
 train_data_new =train_data |> 
+  select(age, race, t_stage, n_stage, grade, estrogen_status, progesterone_status, node_positive_rate, status)
+
+test_data_new = test_data |> 
   select(age, race, t_stage, n_stage, grade, estrogen_status, progesterone_status, node_positive_rate, status)
 
 main_effects_model <- glm(status~. , data = train_data_new, family = binomial)
@@ -931,3 +861,468 @@ summary(interaction_model_14)
     ## Number of Fisher Scoring iterations: 5
 
 ### Model Training and Evaluation
+
+``` r
+train_data_new$status <- as.numeric(train_data_new$status)-1  
+test_data_new$status <- as.numeric(test_data_new$status)-1 
+
+logistic_model <- glm(status ~ ., data = train_data_new, family = binomial)
+
+predictions <- predict(logistic_model, test_data_new, type = "response")
+
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+
+
+conf_matrix <- table(Predicted = predicted_classes, Actual = test_data_new$status)
+
+TP <- conf_matrix[2, 2]  # True Positive
+FP <- conf_matrix[2, 1]  # False Positive
+FN <- conf_matrix[1, 2]  # False Negative
+TN <- conf_matrix[1, 1]  # True Negative
+
+
+sensitivity <- TP / (TP + FN)  # Sensitivity (Recall)
+precision <- TP / (TP + FP)    # Precision
+accuracy <- (TP + TN) / sum(conf_matrix)  # Accuracy
+auc_value <- auc(roc(test_data_new$status, predictions))  # AUC
+```
+
+    ## Setting levels: control = 0, case = 1
+
+    ## Setting direction: controls < cases
+
+``` r
+f1_score <- 2 * (precision * sensitivity) / (precision + sensitivity)  # F1-Score
+
+
+conf_matrix_table <- data.frame(
+  Actual = c("0 (Alive)", "1 (Dead)", "Total"),
+  Predicted_0 = c(TN, FN, TN + FN),
+  Predicted_1 = c(FP, TP, FP + TP),
+  Total = c(TN + FP, FN + TP, sum(conf_matrix))
+)
+
+metrics_table <- data.frame(
+  Metric = c("Accuracy", "Sensitivity (Recall)", "Precision", "F1-Score", "AUC"),
+  Value = round(c(accuracy, sensitivity, precision, f1_score, auc_value), 4)
+)
+
+kable(conf_matrix_table, 
+      caption="Confusion Matrix",
+      col.names = c("Actual", "Predicted = 0", "Predicted = 1", "Total")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+<table class="table table-striped table-hover table-condensed" style="width: auto !important; margin-left: auto; margin-right: auto;">
+
+<caption>
+
+Confusion Matrix
+</caption>
+
+<thead>
+
+<tr>
+
+<th style="text-align:left;">
+
+Actual
+</th>
+
+<th style="text-align:right;">
+
+Predicted = 0
+</th>
+
+<th style="text-align:right;">
+
+Predicted = 1
+</th>
+
+<th style="text-align:right;">
+
+Total
+</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+<tr>
+
+<td style="text-align:left;">
+
+0 (Alive)
+</td>
+
+<td style="text-align:right;">
+
+1001
+</td>
+
+<td style="text-align:right;">
+
+16
+</td>
+
+<td style="text-align:right;">
+
+1017
+</td>
+
+</tr>
+
+<tr>
+
+<td style="text-align:left;">
+
+1 (Dead)
+</td>
+
+<td style="text-align:right;">
+
+168
+</td>
+
+<td style="text-align:right;">
+
+23
+</td>
+
+<td style="text-align:right;">
+
+191
+</td>
+
+</tr>
+
+<tr>
+
+<td style="text-align:left;">
+
+Total
+</td>
+
+<td style="text-align:right;">
+
+1169
+</td>
+
+<td style="text-align:right;">
+
+39
+</td>
+
+<td style="text-align:right;">
+
+1208
+</td>
+
+</tr>
+
+</tbody>
+
+</table>
+
+``` r
+kable(metrics_table, caption="Evaluation Metrics") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+<table class="table table-striped table-hover table-condensed" style="width: auto !important; margin-left: auto; margin-right: auto;">
+
+<caption>
+
+Evaluation Metrics
+</caption>
+
+<thead>
+
+<tr>
+
+<th style="text-align:left;">
+
+Metric
+</th>
+
+<th style="text-align:right;">
+
+Value
+</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+<tr>
+
+<td style="text-align:left;">
+
+Accuracy
+</td>
+
+<td style="text-align:right;">
+
+0.8477
+</td>
+
+</tr>
+
+<tr>
+
+<td style="text-align:left;">
+
+Sensitivity (Recall)
+</td>
+
+<td style="text-align:right;">
+
+0.1204
+</td>
+
+</tr>
+
+<tr>
+
+<td style="text-align:left;">
+
+Precision
+</td>
+
+<td style="text-align:right;">
+
+0.5897
+</td>
+
+</tr>
+
+<tr>
+
+<td style="text-align:left;">
+
+F1-Score
+</td>
+
+<td style="text-align:right;">
+
+0.2000
+</td>
+
+</tr>
+
+<tr>
+
+<td style="text-align:left;">
+
+AUC
+</td>
+
+<td style="text-align:right;">
+
+0.7695
+</td>
+
+</tr>
+
+</tbody>
+
+</table>
+
+**ROC Curve**
+
+``` r
+roc_curve <- roc(test_data_new$status, predictions)
+```
+
+    ## Setting levels: control = 0, case = 1
+
+    ## Setting direction: controls < cases
+
+``` r
+roc_data <- data.frame(
+  TPR = rev(roc_curve$sensitivities),  # True Positive Rate (Sensitivity)
+  FPR = rev(1 - roc_curve$specificities)  # False Positive Rate (1 - Specificity)
+)
+
+ggplot(data = roc_data, aes(x = FPR, y = TPR)) +
+  geom_line(color = "blue", linewidth = 1) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray") + 
+  labs(
+    title = "ROC Curve",
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)",
+    caption = paste0("AUC = ", round(auc(roc_curve), 3)) 
+  ) +
+  theme_minimal(base_size = 15) + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+![](Logistic-Model_files/figure-gfm/unnamed-chunk-16-1.png)<!-- -->
+
+### More Evaluation
+
+**Evaluate Performance Metrics by Race**
+
+``` r
+# Divide test data by race
+majority_group <- test_data_new[test_data_new$race == "White", ]
+minority_group <- test_data_new[test_data_new$race != "White", ]
+
+# Define a function to compute performance metrics
+compute_metrics <- function(data, model) {
+  predictions <- predict(model, data, type = "response")
+  predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+  
+  # Confusion matrix components
+  conf_matrix <- table(Predicted = predicted_classes, Actual = data$status)
+  TP <- conf_matrix[2, 2]
+  FP <- conf_matrix[2, 1]
+  FN <- conf_matrix[1, 2]
+  TN <- conf_matrix[1, 1]
+  
+  # Metrics
+  sensitivity <- TP / (TP + FN)  # Recall
+  precision <- TP / (TP + FP)
+  accuracy <- (TP + TN) / sum(conf_matrix)
+  auc_value <- auc(roc(data$status, predictions))
+  
+  data.frame(
+    Accuracy = round(accuracy, 4),
+    Sensitivity = round(sensitivity, 4),
+    Precision = round(precision, 4),
+    AUC = round(auc_value, 4)
+  )
+}
+
+# Compute metrics for each group
+majority_metrics <- compute_metrics(majority_group, logistic_model)
+```
+
+    ## Setting levels: control = 0, case = 1
+
+    ## Setting direction: controls < cases
+
+``` r
+minority_metrics <- compute_metrics(minority_group, logistic_model)
+```
+
+    ## Setting levels: control = 0, case = 1
+    ## Setting direction: controls < cases
+
+``` r
+# Combine results
+group_comparison <- rbind(
+  "Majority (White)" = majority_metrics,
+  "Minority (Black + Other)" = minority_metrics
+)
+
+kable(group_comparison, caption="Performance Metrics by Race") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+<table class="table table-striped table-hover table-condensed" style="width: auto !important; margin-left: auto; margin-right: auto;">
+
+<caption>
+
+Performance Metrics by Race
+</caption>
+
+<thead>
+
+<tr>
+
+<th style="text-align:left;">
+
+</th>
+
+<th style="text-align:right;">
+
+Accuracy
+</th>
+
+<th style="text-align:right;">
+
+Sensitivity
+</th>
+
+<th style="text-align:right;">
+
+Precision
+</th>
+
+<th style="text-align:right;">
+
+AUC
+</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+<tr>
+
+<td style="text-align:left;">
+
+Majority (White)
+</td>
+
+<td style="text-align:right;">
+
+0.8530
+</td>
+
+<td style="text-align:right;">
+
+0.1019
+</td>
+
+<td style="text-align:right;">
+
+0.6154
+</td>
+
+<td style="text-align:right;">
+
+0.7716
+</td>
+
+</tr>
+
+<tr>
+
+<td style="text-align:left;">
+
+Minority (Black + Other)
+</td>
+
+<td style="text-align:right;">
+
+0.8177
+</td>
+
+<td style="text-align:right;">
+
+0.2059
+</td>
+
+<td style="text-align:right;">
+
+0.5385
+</td>
+
+<td style="text-align:right;">
+
+0.7613
+</td>
+
+</tr>
+
+</tbody>
+
+</table>
