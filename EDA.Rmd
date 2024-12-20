@@ -1,5 +1,5 @@
 ---
-title: "BM final try"
+title: "BM EDA"
 author: "Liqi Zhou"
 output: github_document
 ---
