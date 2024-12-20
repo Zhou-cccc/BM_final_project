@@ -73,8 +73,11 @@ ggcoxzph(ph_test)
 
 
 ```{r}
-# Fit the full model
+# Try strata
 full_model <- coxph(surv_object ~ . - status - survival_months - stage_six - differentiate - estrogen_status - progesterone_status - a_stage + strata(a_stage, estrogen_status, progesterone_status), data = train_data)
+
+# Fit the full model
+full_model <- coxph(surv_object ~ . - status - survival_months - stage_six - differentiate - estrogen_status - progesterone_status - a_stage, data = train_data)
 
 summary(full_model)
 
