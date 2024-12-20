@@ -2,7 +2,7 @@
 title: "survival"
 author: "Zhengyong Chen"
 date: "2024-12-19"
-output: html_document
+output: github_document
 ---
 
 ```{r setup, include=FALSE}
