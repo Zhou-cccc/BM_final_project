@@ -1,0 +1,784 @@
+---
+title: "Project 2 Code"
+output: html_document
+---
+
+```{r message=FALSE}
+library(carData)
+library(tidyverse)
+library(corrplot)
+library(GGally)
+library(caret)   
+library(glmnet)  
+library(pROC)    
+library(car)
+library(rsample)
+library(knitr)
+library(kableExtra)
+library(flextable)
+library(officer)
+library(ggplot2)
+library(gridExtra)
+library(survival)
+library(survminer)
+library(xtable)
+library(survcomp)
+```
+
+
+
+# EDA
+
+```{r}
+bcp <- read.csv("Project_2_data.csv") |>
+  mutate(across(where(is.character), as.factor))
+```
+
+## 1. All variables
+a descriptive table with summary statistics for all variables
+```{r}
+bcp |> 
+  summarise(across(where(is.numeric), 
+                   list(mean = ~mean(.x, na.rm = TRUE),
+                        sd = ~sd(.x, na.rm = TRUE),
+                        min = ~min(.x, na.rm = TRUE),
+                        max = ~max(.x, na.rm = TRUE),
+                        median = ~median(.x, na.rm = TRUE),
+                        missing = ~sum(is.na(.x))
+                   ), 
+                   .names = "{.col}_{.fn}")) |> 
+  pivot_longer(everything(), 
+               names_to = c("Variable", ".value"), 
+               names_sep = "_") |>
+  knitr::kable()
+
+```
+
+```{r}
+bcp |> 
+  select(where(is.factor)) |>
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Level") |>
+  count(Variable, Level) |>
+  group_by(Variable) |>
+  mutate(Proportion = scales::percent(n / sum(n), accuracy = 0.01)) |>
+  ungroup() |> 
+  arrange(Variable, desc(n)) |> 
+  mutate(Variable = ifelse(duplicated(Variable), "", Variable)) |>  
+  knitr::kable(col.names = c("Variable", "Level", "Count", "Proportion"))
+
+```
+
+
+## 2. Outcome
+
+### Survival.Months & Status
+```{r}
+library(ggplot2)
+library(patchwork)
+
+plot1 <- ggplot(bcp, aes(x = Survival.Months)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "lightblue", color = "black", alpha = 0.7) +
+  geom_density(color = "blue", linewidth = 1) +
+  labs(title = "Distribution of Survival Months",
+       x = "Survival Months",
+       y = "Density") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot2 <- ggplot(bcp, aes(x = Status, fill = Status)) +
+  geom_bar() +
+  scale_fill_manual(values = c("lightblue", "gold")) +
+  labs(title = "Survival Status Distribution",
+       x = "Status",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5))
+
+combined_plot <- plot1 + plot2 + 
+  plot_layout(ncol = 2) & 
+  theme(plot.margin = margin(10, 10, 10, 10))
+
+combined_plot
+```
+
+
+
+## 3. Predictors
+### numeric
+```{r}
+plot_continuous_density_box <- function(var_name) {
+  p1 <- ggplot(bcp, aes_string(x = var_name)) +
+    geom_density(fill = "skyblue", alpha = 0.7, color = "blue") +
+    labs(title = paste("Density Plot of", var_name), 
+         x = var_name, 
+         y = "Density") +
+    theme_minimal()
+  
+  p2 <- ggplot(bcp, aes_string(y = var_name)) +
+    geom_boxplot(fill = "orange") +
+    labs(title = paste("Boxplot of", var_name), 
+         y = var_name) +
+    theme_minimal()
+  
+  return(list(p1, p2)) 
+}
+
+continuous_vars <- c("Age", "Tumor.Size", "Regional.Node.Examined", "Reginol.Node.Positive")
+plots <- lapply(continuous_vars, plot_continuous_density_box)
+
+left_plots <- do.call(c, lapply(plots, `[`, 1:2)) 
+
+grid.arrange(grobs = left_plots, ncol = 2)
+```
+
+### categorical
+```{r}
+categorical_vars <- bcp |>
+  select(1:14) |>
+  select(where(is.factor))
+  
+plot_categorical <- function(var_name) {
+  ggplot(bcp, aes_string(x = var_name)) +
+    geom_bar(fill = "skyblue", color = "black") +
+    labs(title = paste("Frequency of", var_name), x = var_name, y = "Count") +
+    theme_minimal()
+}
+
+cat_plots <- lapply(names(categorical_vars), plot_categorical)
+
+grid.arrange(grobs = cat_plots, ncol = 2)
+
+```
+
+# Diagnose and Race
+
+## Summary
+```{r}
+df <- read.csv("Project_2_data.csv") |> 
+  janitor::clean_names() |>
+  subset(select = -c(survival_months)) |>
+  mutate(grade = as.character(grade)) |>  
+  mutate(grade = ifelse(trimws(tolower(grade)) == "anaplastic; grade iv", "4", grade)) |> 
+  rename(stage_six = x6th_stage) |> 
+  mutate(
+    t_stage = factor(t_stage),
+    race = factor(race),
+    marital_status = factor(marital_status),
+    n_stage = factor(n_stage),
+    stage_six = factor(stage_six),
+    differentiate = factor(differentiate),
+    a_stage = factor(a_stage), 
+    estrogen_status = factor(estrogen_status),
+    progesterone_status = factor(progesterone_status), 
+    status = factor(status),
+    grade = factor(grade)  
+  )
+```
+
+```{r}
+data_df = df|>
+  mutate(node_positive_rate = reginol_node_positive/regional_node_examined)|>
+  subset(select = -c(reginol_node_positive, regional_node_examined,stage_six, differentiate))
+```
+
+## Linear
+
+```{r}
+logistic_model = glm(status ~ ., data = data_df, family = binomial())
+data_df$prob = predict(logistic_model, type = "response")
+
+numeric_df = data_df |>
+  dplyr::select_if(is.numeric) 
+predictors = colnames(numeric_df)
+
+numeric_df = numeric_df |>
+  mutate(logit = log(prob/(1-prob))) 
+```
+
+## Baseline model
+
+```{r}
+data_new =data_df|> 
+  select(age, race, t_stage, n_stage, grade, estrogen_status, progesterone_status, node_positive_rate, status)
+
+selected_model <- glm(status~. , data = data_new, family = binomial)
+summary(selected_model)
+```
+
+## Diagnose
+
+### Linearity check: Continuous predictors vs logit transformation
+```{r}
+logit = function(p) {
+  log(p / (1 - p))
+}
+
+continuous_vars = c("age", "node_positive_rate")
+par(mfrow = c(1, length(continuous_vars)))
+for (var in continuous_vars) {
+  plot(data_new[[var]], logit(fitted(selected_model)),
+       main = paste("Logit vs", var), 
+       xlab = var, 
+       ylab = "Logit (log-odds)", 
+       pch = 20, col = "blue")
+  abline(lm(logit(fitted(selected_model)) ~ data_new[[var]]), col = "red")
+}
+```
+
+### Check for outliers, leverage, and influence points
+```{r}
+# Leverage plot
+plot(hatvalues(selected_model), alpha = 0.6, 
+     main = "Leverage Values", 
+     xlab = "Index", 
+     ylab = "Leverage", 
+     pch = 20, col = "blue")
+abline(h = 2 * mean(hatvalues(selected_model)), col = "red", lty = 2)
+
+# Cook's Distance plot
+plot(cooks.distance(selected_model), alpha = 0.6, 
+     main = "Cook's Distance", 
+     xlab = "Index", 
+     ylab = "Cook's Distance", 
+     pch = 20, col = "blue")
+abline(h = 4 / nrow(data_new), col = "red", lty = 2)
+```
+
+### Influential
+```{r}
+p = length(coef(selected_model))  
+n = nrow(data_new)  
+threshold = p * 3 / n
+
+hat_matrix = hatvalues(selected_model)
+data_hat_df <- data_new |> 
+  mutate(hat_values = hat_matrix) |> 
+  mutate(potential_outlier = ifelse(hat_values >= threshold, 1, 0))
+
+cook_d = cooks.distance(selected_model)
+data_hat_cook_df <- data_hat_df |> 
+  mutate(cookd = cook_d) |> 
+  mutate(influential = ifelse(cookd >= 0.5, 1, 0))
+
+if (any(data_hat_cook_df$influential == 1)) {
+  print("There are influential points in the dataset.")
+} else {
+  print("No influential points found in the dataset.")
+}
+```
+
+### train-test split
+
+```{r}
+set.seed(123)
+trainIndex = createDataPartition(data_new$status, p = 0.7, 
+                                  list = FALSE,
+                                  times = 1)
+train_df = data_df[trainIndex, ]
+test_df = data_df[-trainIndex, ]
+
+train_covariate = train_df|>
+  subset(select = -c(status))
+
+test_covariate = test_df|>
+  subset(select = -c(status))
+```
+
+
+## Stratify Race
+### Check
+```{r}
+white_test<-test_df |> 
+  filter(race == "White")
+
+
+white <- predict(selected_model,newdata = white_test)
+white = white|>
+  as.data.frame()|>
+  mutate(actual = white_test$status)|>
+  mutate(prediction = ifelse(white > 0.5, "Dead", "Alive"))|>
+  mutate(prediction = factor(prediction))
+
+confusionMatrix(data=pull(white,prediction), reference = pull(white_test, status))
+
+```
+
+```{r}
+nwhite_test<-test_df |> 
+  filter(race != "White")
+
+
+nwhite <- predict(selected_model,newdata = nwhite_test)
+nwhite = nwhite|>
+  as.data.frame()|>
+  mutate(actual = nwhite_test$status)|>
+  mutate(prediction = ifelse(nwhite > 0.5, "Dead", "Alive"))|>
+  mutate(prediction = factor(prediction))
+
+confusionMatrix(data=pull(nwhite,prediction), reference = pull(nwhite_test, status))
+
+```
+
+### Improve fairness by weighting
+```{r}
+white_alive_rate = sum(train_df$race == "White" & train_df$status == "Alive") / sum(train_df$race == "White")
+nwhite_alive_rate = sum(train_df$race != "White" & train_df$status == "Alive") / sum(train_df$race != "White")
+
+weight_vector = ifelse(train_df$race == "White", 1 / white_alive_rate, 1 / nwhite_alive_rate)
+
+logistic_model_weight = train(
+  status ~ age + grade + node_positive_rate + race + t_stage + n_stage + estrogen_status + progesterone_status,
+  data = train_df,
+  method = "glm",
+  family = "binomial",
+  weights = weight_vector
+)
+
+pre_global = predict(logistic_model_weight, newdata = test_df)
+confusionMatrix(data = pre_global, reference = pull(test_df, status))
+```
+
+
+## Load Data and Cleaning
+
+```{r}
+data <- read.csv("Project_2_data.csv") |> 
+  janitor::clean_names() |>
+  subset(select = -c(survival_months)) |>
+  mutate(grade = as.character(grade)) |>  
+  mutate(grade = ifelse(trimws(tolower(grade)) == "anaplastic; grade iv", "4", grade)) |> 
+  rename(stage_six = x6th_stage) |> 
+  mutate(
+    t_stage = factor(t_stage),
+    race = factor(race),
+    marital_status = factor(trimws(marital_status)),
+    n_stage = factor(n_stage),
+    stage_six = factor(stage_six),
+    differentiate = factor(differentiate),
+    a_stage = factor(a_stage), 
+    estrogen_status = factor(estrogen_status),
+    progesterone_status = factor(progesterone_status), 
+    status = factor(status),
+    grade = factor(grade)  
+  )
+```
+
+## Collinearity
+```{r}
+grade_diff_table <- table(data$grade, data$differentiate)
+rownames(grade_diff_table) <- c("Grade=1", "Grade=2", "Grade=3", "Grade=4")
+
+knitr::kable(grade_diff_table,
+             caption = "Contingency Table of Grade vs Differentiate")
+```
+
+```{r}
+data <- data |> select(-differentiate)
+```
+
+```{r}
+chisq_test_result <- chisq.test(table(data$stage_six, data$n_stage))
+print(chisq_test_result)
+```
+```{r}
+if (chisq_test_result$p.value < 0.05) {
+  cat("6th Stage and N Stage are not independent，delete 6th Stage. \n")
+  data <- data |> select(-stage_six)
+}
+```
+
+```{r}
+numeric_data <- data |> select_if(is.numeric)
+
+scatter_matrix <- ggpairs(
+  numeric_data, 
+  upper = list(continuous = "points"), 
+  lower = list(continuous = "smooth"),
+  diag = list(continuous = "densityDiag"),  
+  axisLabels = "show",
+  title = "Scatter Plot Matrix of Numeric Variables"
+) +
+  theme_minimal(base_size = 12) + 
+  theme(strip.text = element_text(size = 8)) 
+print(scatter_matrix)
+
+cor_matrix <- cor(numeric_data, use = "complete.obs")
+
+cor_matrix_plot <- ggplot(
+  data = as.data.frame(as.table(cor_matrix)), 
+  aes(Var1, Var2, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "blue", high = "red", mid = "white", midpoint = 0, 
+    limit = c(-1, 1)
+  ) +
+  geom_text(aes(label = sprintf("%.2f", Freq)), color = "black", size = 4) +  
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),  
+    axis.text.y = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 12)
+  ) +
+  labs(
+    title = "Correlation Matrix of Numeric Variables",
+    x = "",
+    y = ""
+  )
+print(cor_matrix_plot)
+```
+
+```{r}
+data <- data |> 
+  mutate(
+    node_positive_rate = reginol_node_positive / regional_node_examined,
+    node_positive_rate = ifelse(is.nan(node_positive_rate) | is.infinite(node_positive_rate), NA, node_positive_rate)
+  ) |> 
+  select(-reginol_node_positive, -regional_node_examined)
+
+```
+
+**VIF**
+
+```{r}
+logistic_model <- glm(status ~.,
+                      data = data, family = binomial)
+
+vif_values <- vif(logistic_model)
+vif_values
+
+high_vif <- vif_values[vif_values > 5]
+if (length(high_vif) > 0) {
+  cat("There exits collinearity problem between variables.\n")
+  print(high_vif)
+} else {
+  cat("There is no collinearity problem between variables.\n")
+}
+```
+
+## train-test split
+
+```{r}
+set.seed(123)
+train_test_split <- initial_split(data, prop = 0.7)
+train_data <- training(train_test_split)
+test_data <- testing(train_test_split)
+```
+
+## Stepwise Selection
+
+```{r}
+initial_model <- glm(status ~ ., data = train_data, family = binomial)
+
+
+stepwise_model <- step(initial_model, direction = "both", trace = 0)
+
+
+important_vars <- names(coef(stepwise_model))[-1]  
+important_vars
+```
+
+
+```{r}
+train_data_new =train_data |> 
+  select(age, race, t_stage, n_stage, grade, estrogen_status, progesterone_status, node_positive_rate, status)
+
+test_data_new = test_data |> 
+  select(age, race, t_stage, n_stage, grade, estrogen_status, progesterone_status, node_positive_rate, status)
+
+main_effects_model <- glm(status~. , data = train_data_new, family = binomial)
+summary(main_effects_model)
+```
+
+## Considering Interactions
+
+```{r}
+interaction_model_1 <- glm(status ~ age * race + t_stage + n_stage + grade + estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_1)
+
+interaction_model_2 <- glm(status ~  race + age *t_stage + n_stage + grade + estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_2)
+
+interaction_model_3 <- glm(status ~  race + t_stage + age * n_stage + grade + estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_3)
+
+interaction_model_4 <- glm(status ~  race + t_stage + n_stage + age * grade + estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_4)
+
+interaction_model_5 <- glm(status ~  race + t_stage + n_stage + grade + age * estrogen_status + progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_5)
+
+interaction_model_6 <- glm(status ~  race + t_stage + n_stage + grade + estrogen_status + age *progesterone_status + node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_6)
+
+interaction_model_7 <- glm(status ~  race + t_stage + n_stage + grade + estrogen_status + progesterone_status + age * node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_7)
+```
+
+```{r}
+interaction_model_8 <- glm(status ~ age+node_positive_rate * race + t_stage + n_stage + grade + estrogen_status + progesterone_status , 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_8)
+
+interaction_model_9 <- glm(status ~  race + node_positive_rate *t_stage + n_stage + grade + estrogen_status + progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_9)
+
+interaction_model_10 <- glm(status ~  race + t_stage + node_positive_rate * n_stage + grade + estrogen_status + progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_10)
+
+interaction_model_11 <- glm(status ~  race + t_stage + n_stage + node_positive_rate * grade + estrogen_status + progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_11)
+
+interaction_model_12 <- glm(status ~  race + t_stage + n_stage + grade + node_positive_rate * estrogen_status + progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_12)
+
+interaction_model_13 <- glm(status ~  race + t_stage + n_stage + grade + estrogen_status + node_positive_rate *progesterone_status + age, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_13)
+
+interaction_model_14 <- glm(status ~  race + t_stage + n_stage + grade + estrogen_status + progesterone_status + age * node_positive_rate, 
+                         data = train_data_new, family = binomial)
+summary(interaction_model_14)
+```
+
+## Model Training and Evaluation
+
+```{r}
+train_data_new$status <- as.numeric(train_data_new$status)-1  
+test_data_new$status <- as.numeric(test_data_new$status)-1 
+
+logistic_model <- glm(status ~ ., data = train_data_new, family = binomial)
+
+predictions <- predict(logistic_model, test_data_new, type = "response")
+
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+
+
+conf_matrix <- table(Predicted = predicted_classes, Actual = test_data_new$status)
+
+TP <- conf_matrix[2, 2]  # True Positive
+FP <- conf_matrix[2, 1]  # False Positive
+FN <- conf_matrix[1, 2]  # False Negative
+TN <- conf_matrix[1, 1]  # True Negative
+
+
+sensitivity <- TP / (TP + FN)  # Sensitivity (Recall)
+precision <- TP / (TP + FP)    # Precision
+accuracy <- (TP + TN) / sum(conf_matrix)  # Accuracy
+auc_value <- auc(roc(test_data_new$status, predictions))  # AUC
+f1_score <- 2 * (precision * sensitivity) / (precision + sensitivity)  # F1-Score
+
+
+conf_matrix_table <- data.frame(
+  Actual = c("0 (Alive)", "1 (Dead)", "Total"),
+  Predicted_0 = c(TN, FN, TN + FN),
+  Predicted_1 = c(FP, TP, FP + TP),
+  Total = c(TN + FP, FN + TP, sum(conf_matrix))
+)
+
+metrics_table <- data.frame(
+  Metric = c("Accuracy", "Sensitivity (Recall)", "Precision", "F1-Score", "AUC"),
+  Value = round(c(accuracy, sensitivity, precision, f1_score, auc_value), 4)
+)
+
+kable(conf_matrix_table, 
+      caption="Confusion Matrix",
+      col.names = c("Actual", "Predicted = 0", "Predicted = 1", "Total")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+
+kable(metrics_table, caption="Evaluation Metrics") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+
+**ROC Curve**
+```{r}
+roc_curve <- roc(test_data_new$status, predictions)
+
+roc_data <- data.frame(
+  TPR = rev(roc_curve$sensitivities),  # True Positive Rate (Sensitivity)
+  FPR = rev(1 - roc_curve$specificities)  # False Positive Rate (1 - Specificity)
+)
+
+ggplot(data = roc_data, aes(x = FPR, y = TPR)) +
+  geom_line(color = "blue", linewidth = 1) + 
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray") + 
+  labs(
+    title = "ROC Curve",
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)",
+    caption = paste0("AUC = ", round(auc(roc_curve), 3)) 
+  ) +
+  theme_minimal(base_size = 15) + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+## More Evaluation
+
+**Evaluate Performance Metrics by Race**
+```{r}
+# Divide test data by race
+majority_group <- test_data_new[test_data_new$race == "White", ]
+minority_group <- test_data_new[test_data_new$race != "White", ]
+
+# Define a function to compute performance metrics
+compute_metrics <- function(data, model) {
+  predictions <- predict(model, data, type = "response")
+  predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+  
+  # Confusion matrix components
+  conf_matrix <- table(Predicted = predicted_classes, Actual = data$status)
+  TP <- conf_matrix[2, 2]
+  FP <- conf_matrix[2, 1]
+  FN <- conf_matrix[1, 2]
+  TN <- conf_matrix[1, 1]
+  
+  # Metrics
+  sensitivity <- TP / (TP + FN)  # Recall
+  precision <- TP / (TP + FP)
+  accuracy <- (TP + TN) / sum(conf_matrix)
+  auc_value <- auc(roc(data$status, predictions))
+  
+  data.frame(
+    Accuracy = round(accuracy, 4),
+    Sensitivity = round(sensitivity, 4),
+    Precision = round(precision, 4),
+    AUC = round(auc_value, 4)
+  )
+}
+
+# Compute metrics for each group
+majority_metrics <- compute_metrics(majority_group, logistic_model)
+minority_metrics <- compute_metrics(minority_group, logistic_model)
+
+# Combine results
+group_comparison <- rbind(
+  "Majority (White)" = majority_metrics,
+  "Minority (Black + Other)" = minority_metrics
+)
+
+kable(group_comparison, caption="Performance Metrics by Race") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Survival Analysis
+
+## Data cleaning
+
+```{r}
+data <- read.csv("Project_2_data.csv") |> 
+  janitor::clean_names() |>
+  mutate(grade = as.character(grade)) |>  
+  mutate(grade = ifelse(trimws(tolower(grade)) == "anaplastic; grade iv", "4", grade)) |> 
+  rename(stage_six = x6th_stage) |> 
+  mutate(across(c(t_stage, race, marital_status, n_stage, stage_six, differentiate, a_stage, estrogen_status,
+                  status, grade), as.factor)) |> 
+  mutate(node_positive_rate = reginol_node_positive / regional_node_examined) |> 
+  select(-reginol_node_positive, -regional_node_examined)
+```
+
+## Set train and test data
+
+```{r}
+set.seed(123)
+train_index <- createDataPartition(data$status, p = 0.8, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+```
+
+## Create the survival object
+
+```{r}
+# Create a survival object
+surv_object <- Surv(time = train_data$survival_months, event = as.numeric(train_data$status == "Dead"))
+
+# Fit a Cox Proportional Hazards model
+cox_model <- coxph(surv_object ~ . - status - survival_months - stage_six - differentiate, data = train_data)
+
+```
+
+## Test proportional hazards assumption
+
+```{r}
+ph_test <- cox.zph(cox_model)
+ph_test_table <- as.data.frame(ph_test$table) %>%
+  rownames_to_column(var = "Covariate") %>%
+  mutate(p_value = format.pval(`p`, digits = 3)) %>%
+  select(Covariate, chisq = `chisq`, df = `df`, p_value) |> 
+  kable("html", align = c("l", "c", "c", "c"), caption = "Proportional Hazards Test Results") %>%
+  kable_styling(full_width = FALSE, position = "center")
+
+ph_test_table
+
+# Visualize the results
+ggcoxzph(ph_test)
+```
+
+
+```{r}
+# Try strata
+full_model <- coxph(surv_object ~ . - status - survival_months - stage_six - differentiate - estrogen_status - progesterone_status - a_stage + strata(a_stage, estrogen_status, progesterone_status), data = train_data)
+
+# Fit the full model
+full_model <- coxph(surv_object ~ . - status - survival_months - stage_six - differentiate - estrogen_status - progesterone_status - a_stage, data = train_data)
+
+summary(full_model)
+
+# Test assumptions again
+ph_test_table <- as.data.frame(cox.zph(full_model)$table) %>%
+  rownames_to_column(var = "Covariate") %>%
+  mutate(p_value = format.pval(`p`, digits = 3)) %>%
+  select(Covariate, chisq = `chisq`, df = `df`, p_value) |> 
+  kable("html", align = c("l", "c", "c", "c"), caption = "Proportional Hazards Test Results (Refitted)") %>%
+  kable_styling(full_width = FALSE, position = "center")
+
+ph_test_table
+```
+
+## Stepwise Selection
+
+```{r}
+# Perform stepwise selection
+stepwise_model <- step(full_model, direction = "both")
+
+# Summary of the final selected model
+summary(stepwise_model)
+```
+
+## Prediction
+
+```{r}
+# Predict on the test dataset
+surv_test <- Surv(time = test_data$survival_months, event = as.numeric(test_data$status == "Dead"))
+test_risk <- predict(stepwise_model, newdata = test_data, type = "risk")
+```
+
+## Evaluate model performance on the test dataset
+
+```{r}
+# Concordance index
+c_index <- concordance.index(x = test_risk, 
+                             surv.time = test_data$survival_months, 
+                             surv.event = as.numeric(test_data$status == "Dead"))
+print(c_index$c.index)
+
+# Kaplan-Meier curves for high- and low-risk groups
+test_data$risk_group <- ifelse(test_risk > median(test_risk), "High", "Low")
+km_fit <- survfit(Surv(time = test_data$survival_months, event = as.numeric(test_data$status == "Dead")) ~ risk_group, data = test_data)
+
+# Visualize Kaplan-Meier curves
+ggsurvplot(km_fit, data = test_data, pval = TRUE, 
+           title = "Kaplan-Meier Curves for Predicted Risk Groups")
+```
+
